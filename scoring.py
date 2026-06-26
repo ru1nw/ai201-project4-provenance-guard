@@ -1,4 +1,6 @@
 import json
+import re
+import string
 from os import getenv
 
 from dotenv import load_dotenv
@@ -40,16 +42,82 @@ def llm_scoring(text: str) -> dict:
         return {"score": -1, "reasoning": f"Failed to parse LLM response: {e}"}
     return content_dict
 
-def stylo_scoring(text: str) -> float:
-    return 0.5
+def stylo_scoring(text: str) -> float | None:
+    words = text.split()
+    if len(words) < 20:
+        return None
 
-def confidence_and_label(llm_score: float, stylo_score: float) -> dict:
-    label = "uncertain"
-    combined_score = confidence = signal_divergence = llm_score
+    # Normalize ASCII ellipsis sequences before any analysis
+    normalized = re.sub(r'\.{2,}', '…', text)
+    # Strip markdown formatting so *word*, **word**, > quotes, and --- don't
+    # produce phantom tokens or skew word-length averages
+    stripped = re.sub(r'[*_~`#>]|---+', '', normalized)
+
+    sub_scores = []
+
+    # 1. Sentence length variance — requires ≥ 3 sentences for a meaningful CV
+    # Splits on terminal punctuation and bare newlines to catch online writing
+    # that uses line breaks instead of periods. Low CV = AI-like → high score.
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+|\n+', stripped.strip()) if s.strip()]
+    if len(sentences) >= 3:
+        lengths = [len(s.split()) for s in sentences]
+        mean = sum(lengths) / len(lengths)
+        std = (sum((l - mean) ** 2 for l in lengths) / len(lengths)) ** 0.5
+        cv = std / mean if mean > 0 else 0.0
+        sub_scores.append(max(0.0, 1.0 - min(cv, 1.0)))
+
+    # 2. MATTR (Moving Average TTR) — requires ≥ 50 tokens for a valid sliding window
+    # High diversity = AI avoids repetition → high score
+    tokens = [w.strip(string.punctuation).lower() for w in stripped.split()]
+    tokens = [t for t in tokens if t]
+    window = 50
+    if len(tokens) >= window:
+        ttrs = [len(set(tokens[i:i + window])) / window for i in range(len(tokens) - window + 1)]
+        mattr = sum(ttrs) / len(ttrs)
+        # Bounds: 0.50 (repetitive/human) → 0.0, 0.95 (diverse/AI) → 1.0
+        sub_scores.append(max(0.0, min((mattr - 0.50) / 0.45, 1.0)))
+
+    # 3. Expressive punctuation density — stable at any length above the 20-word floor
+    # Uses normalized text so ASCII ... is counted alongside Unicode …
+    # Low density = clean = AI-like → high score
+    expressive = set("—–…!?()")
+    ratio = sum(1 for ch in normalized if ch in expressive) / len(normalized)
+    # Bound: ratio ≥ 0.08 is highly expressive/human → score 0.0
+    sub_scores.append(max(0.0, 1.0 - min(ratio / 0.08, 1.0)))
+
+    # 4. Average word length — stable at any length above the 20-word floor
+    # Uses stripped text so markdown tokens don't inflate/deflate the average
+    # Longer words = formal register = AI-like → high score
+    clean = [w.strip(string.punctuation) for w in stripped.split() if w.strip(string.punctuation)]
+    avg_len = sum(len(w) for w in clean) / len(clean) if clean else 5.0
+    # Bounds: 3.5 (casual/human) → 0.0, 7.0 (formal/AI) → 1.0
+    sub_scores.append(max(0.0, min((avg_len - 3.5) / 3.5, 1.0)))
+
+    return round(sum(sub_scores) / len(sub_scores), 4)
+
+def confidence_scoring(llm_score: float, stylo_score: float | None) -> dict:
+    if stylo_score is None:
+        # Short text: only LLM signal available; no divergence possible
+        combined_score = round(llm_score, 4)
+        signal_divergence = False
+    else:
+        combined_score = round(0.75 * llm_score + 0.25 * stylo_score, 4)
+        signal_divergence = abs(llm_score - stylo_score) > 0.60
+
+    if signal_divergence or (0.3 < combined_score < 0.7):
+        attribution = "uncertain"
+        confidence = combined_score
+    elif combined_score >= 0.7:
+        attribution = "ai"
+        confidence = combined_score
+    else:  # combined_score <= 0.3
+        attribution = "human"
+        confidence = round(1 - combined_score, 4)
 
     return {
-        "attribution": label,
-        "combined_score": combined_score,
+        "attribution": attribution,
         "confidence": confidence,
+        "combined_score": combined_score,
         "signal_divergence": signal_divergence,
+        "label": "We're not sure who wrote this."
     }

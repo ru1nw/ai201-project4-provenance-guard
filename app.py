@@ -6,7 +6,7 @@ from flask import Flask, request, jsonify
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
-from scoring import llm_scoring, stylo_scoring, confidence_and_label
+from scoring import llm_scoring, stylo_scoring, confidence_scoring
 
 LOG_PATH = "audit_log.jsonl"
 
@@ -52,25 +52,45 @@ def submit():
     content_id = str(uuid.uuid4())
 
     llm_verdict = llm_scoring(text)
+    if llm_verdict["score"] < 0:
+        log_event({
+            "status": "error",
+            "content_id": content_id,
+            "attribution": "uncertain",
+            "confidence": 0,
+            "llm_score": llm_verdict["score"],
+            "llm_reasoning": llm_verdict["reasoning"],
+            "stylo_score": -1,
+            "text": text,
+            "creator_id": creator_id,
+        })
+        return jsonify({
+            "content_id": content_id,
+            "attribution": "uncertain",
+            "confidence": 0,
+            "label": llm_verdict["reasoning"],
+        })
+    
     stylo_score = stylo_scoring(text)
-    signals = confidence_and_label(llm_verdict["score"], stylo_score)
+    scorings = confidence_scoring(llm_verdict["score"], stylo_score)
 
     log_event({
-        "content_id": content_id,
-        "creator_id": creator_id,
-        "text": text,
-        "attribution": signals["attribution"],
-        "confidence": signals["confidence"],
-        "llm_score": llm_verdict["score"],
-        "stylo_score": stylo_score,
         "status": "labeled",
+        "content_id": content_id,
+        "attribution": scorings["attribution"],
+        "confidence": scorings["confidence"],
+        "llm_score": llm_verdict["score"],
+        "llm_reasoning": llm_verdict["reasoning"],
+        "stylo_score": stylo_score,
+        "text": text,
+        "creator_id": creator_id,
     })
 
     return jsonify({
         "content_id": content_id,
-        "attribution": signals["attribution"],
-        "confidence": round(signals["confidence"], 2),
-        "label": "We're not sure who wrote this.",
+        "attribution": scorings["attribution"],
+        "confidence": round(scorings["confidence"], 2),
+        "label": scorings["label"],
     })
 
 
