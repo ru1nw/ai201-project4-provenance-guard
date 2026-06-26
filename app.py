@@ -72,7 +72,7 @@ def submit():
         })
     
     stylo_score = stylo_scoring(text)
-    scorings = confidence_scoring(llm_verdict["score"], stylo_score)
+    scorings = confidence_scoring(llm_verdict["score"], stylo_score, content_id)
 
     log_event({
         "status": "labeled",

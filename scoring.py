@@ -95,7 +95,7 @@ def stylo_scoring(text: str) -> float | None:
 
     return round(sum(sub_scores) / len(sub_scores), 4)
 
-def confidence_scoring(llm_score: float, stylo_score: float | None) -> dict:
+def confidence_scoring(llm_score: float, stylo_score: float | None, content_id: str) -> dict:
     if stylo_score is None:
         # Short text: only LLM signal available; no divergence possible
         combined_score = round(llm_score, 4)
@@ -114,10 +114,46 @@ def confidence_scoring(llm_score: float, stylo_score: float | None) -> dict:
         attribution = "human"
         confidence = round(1 - combined_score, 4)
 
+    confidence_display = f"{confidence:.2f}"
+    llm_display = f"{llm_score:.2f}"
+    stylo_display = f"{stylo_score:.2f}" if stylo_score is not None else "N/A"
+
+    if attribution == "ai":
+        label = (
+            f"Attribution: Likely AI-generated ({confidence_display} confidence)\n\n"
+            f"This text shows patterns consistent with AI authorship: the LLM classifier\n"
+            f"scored it {llm_display} and the stylometric analysis scored it {stylo_display}\n"
+            f"(higher = more AI-like on both).\n\n"
+            f"Note: short texts and professionally edited writing can produce false positives.\n\n"
+            f"Content ID: {content_id}\n"
+            f"To dispute this result, POST /appeal with your content_id and a reason."
+        )
+    elif attribution == "human":
+        label = (
+            f"Attribution: Likely human-written ({confidence_display} confidence)\n\n"
+            f"This text shows patterns consistent with human authorship: the LLM classifier\n"
+            f"scored it {llm_display} and the stylometric analysis scored it {stylo_display}.\n\n"
+            f"Note: AI text explicitly prompted to sound informal or conversational can\n"
+            f"produce false negatives.\n\n"
+            f"Content ID: {content_id}\n"
+            f"To dispute this result, POST /appeal with your content_id and a reason."
+        )
+    else:
+        label = (
+            f"Attribution: Uncertain ({confidence_display} confidence)\n\n"
+            f"The two detection signals returned conflicting results (LLM: {llm_display},\n"
+            f"stylometric: {stylo_display}). This may mean the text mixes human and AI\n"
+            f"writing, or that it falls outside the system's reliable detection range\n"
+            f"(e.g. very short text, non-native English).\n\n"
+            f"This result does not make a claim about authorship.\n\n"
+            f"Content ID: {content_id}\n"
+            f"To request human review, POST /appeal with your content_id and a reason."
+        )
+
     return {
         "attribution": attribution,
         "confidence": confidence,
         "combined_score": combined_score,
         "signal_divergence": signal_divergence,
-        "label": "We're not sure who wrote this."
+        "label": label,
     }
